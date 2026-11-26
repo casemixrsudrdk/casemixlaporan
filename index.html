@@ -2713,34 +2713,216 @@
       cursor: pointer;
     }
   </style>
+<!-- Library Supabase -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
   (function() {
+    const SUPABASE_URL = 'https://oolorhozkoikddvlymvb.supabase.co';
+    const SUPABASE_ANON_KEY = 'sb_publishable_S2oqrUpq7o8v6rQuUA2dUA_e7Hxed7P';
     const GAS_API_URL = 'https://script.google.com/macros/s/AKfycbxmb4_UBgB97T35DRl0qisKPbeaXL30IwvHmB75KKn4V6ZI3p2T1cGeepal2JNLWKTq/exec';
 
-    // Hanya aktif jika dibuka di luar Google Apps Script (misalnya GitHub Pages)
+    window.db = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+    // Helper: Tarik seluruh baris dari tabel Supabase (mengatasi batas default 1000 baris)
+    async function fetchAllRows(tableName) {
+      const pageSize = 1000;
+      let all = [];
+      let from = 0;
+      while (true) {
+        const { data, error } = await window.db
+          .from(tableName)
+          .select('*')
+          .order('id', { ascending: true })
+          .range(from, from + pageSize - 1);
+        if (error) throw new Error('Supabase [' + tableName + ']: ' + error.message);
+        if (!data || data.length === 0) break;
+        all = all.concat(data);
+        if (data.length < pageSize) break;
+        from += pageSize;
+      }
+      return all;
+    }
+
+    // 1. Login Cepat via Supabase
+    async function sbLoginUser(username, password) {
+      const u = String(username || '').trim();
+      const p = String(password || '').trim();
+      if (!u || !p) return { success: false, message: 'Username dan Password wajib diisi!' };
+
+      const { data, error } = await window.db
+        .from('users')
+        .select('username, password, role, nama_lengkap')
+        .ilike('username', u)
+        .limit(1);
+
+      if (error) throw new Error(error.message);
+      if (!data || data.length === 0 || String(data[0].password) !== p) {
+        return { success: false, message: 'Username atau Password salah!' };
+      }
+      return {
+        success: true,
+        username: data[0].username,
+        role: data[0].role,
+        nama: data[0].nama_lengkap || data[0].username
+      };
+    }
+
+    // 2. Tarik Data Timeline via Supabase
+    async function sbGetTimelineKerja() {
+      const rows = await fetchAllRows('timeline_kerja');
+      const tasks = rows.map(function(r, idx) {
+        return {
+          rowNumber: r.id || (idx + 2),
+          id: r.id_kegiatan || String(r.id),
+          judul: r.judul_kegiatan || '',
+          tanggal: r.tanggal_deadline || '',
+          jam: r.jam_deadline || '15:00',
+          pic: r.nama_pic || 'Tim Casemix',
+          status: r.status_progres || 'Belum Mulai',
+          prioritas: r.prioritas || 'Normal',
+          catatan: r.catatan_tindak_lanjut || '',
+          updatedAt: r.updated_at || ''
+        };
+      });
+      return { success: true, ok: true, tasks: tasks };
+    }
+
+    // 3. Tarik Data Klaim Kompak (Format Identik dengan getClaimDataCompact di Code.gs)
+    async function sbGetClaimDataCompact() {
+      const [inapRows, jalanRows, pendingRows, tlRes] = await Promise.all([
+        fetchAllRows('rawat_inap'),
+        fetchAllRows('rawat_jalan'),
+        fetchAllRows('klaim_pending'),
+        sbGetTimelineKerja().catch(function() { return { tasks: [] }; })
+      ]);
+
+      const dict = [''];
+      const dictMap = { '': 0 };
+      function internStr(val) {
+        const s = (val === undefined || val === null) ? '' : String(val);
+        if (!s) return 0;
+        if (dictMap[s] !== undefined) return dictMap[s];
+        const idx = dict.length;
+        dict.push(s);
+        dictMap[s] = idx;
+        return idx;
+      }
+
+      const packedRows = [];
+
+      function pushTuple(r, sheetTarget, isPendingSheet) {
+        const noSep = (r.no_sep && r.no_sep !== '-') ? String(r.no_sep) : '';
+        const nama = String(r.nama_pasien || '');
+        const isBayi = !noSep && /\b(BY|BAYI)\b/i.test(nama);
+        const isPending = String(r.status_pending || '').toLowerCase() === 'ya';
+        const isRujuk = String(r.rujuk_eksternal || '').toLowerCase() === 'ya';
+        const isCoded = String(r.status_awal || r.status_koding || '').toLowerCase() === 'sudah' || (r.icd_10 && r.icd_10 !== '-');
+        const isRevised = isPendingSheet && !isPending;
+
+        const flags =
+          (isBayi ? 1 : 0) |
+          (isPending ? 2 : 0) |
+          (isRujuk ? 4 : 0) |
+          (isCoded ? 8 : 0) |
+          (isPendingSheet ? 16 : 0) |
+          (isRevised ? 32 : 0);
+
+        const jenisRawat = sheetTarget === 'Rawat_Inap'
+          ? 'Rawat Inap'
+          : (r.jenis_layanan || 'Rawat Jalan');
+
+        const tuple = [
+          Number(r.id || 0),
+          internStr(sheetTarget),
+          noSep,
+          flags,
+          nama,
+          (r.no_rm && r.no_rm !== '-') ? String(r.no_rm) : '',
+          String(r.jenis_kelamin || ''),
+          String(r.tanggal_lahir || ''),
+          String(r.usia_pasien || ''),
+          internStr(jenisRawat),
+          internStr(r.hak_kelas || '-'),
+          internStr(r.kelas_rawat || '-'),
+          internStr(r.nama_ruangan || '-'),
+          internStr(r.nomor_kamar || '-'),
+          String(r.tanggal_registrasi || ''),
+          String(r.tanggal_pulang || ''),
+          String(r.tanggal_acuan_klaim || r.tanggal_pulang || r.tanggal_registrasi || ''),
+          internStr(r.nama_dpjp || r.dpjp || '-'),
+          internStr(r.icd_10 || '-'),
+          internStr(r.icd_9 || '-'),
+          Number(r.tarif_inacbg || 0),
+          internStr(r.alasan_pending || ''),
+          internStr(r.rs_rujukan || ''),
+          internStr(r.tindak_lanjut || 'Pulang'),
+          String(r.link_gdrive || ''),
+          internStr(r.status_akhir || 'BELUM LENGKAP'),
+          '',
+          String(r.ket_tidak_lengkap || '')
+        ];
+        packedRows.push(tuple);
+      }
+
+      inapRows.forEach(function(r) { pushTuple(r, 'Rawat_Inap', false); });
+      jalanRows.forEach(function(r) { pushTuple(r, 'Rawat_Jalan', false); });
+      pendingRows.forEach(function(r) { pushTuple(r, 'Klaim_Pending', true); });
+
+      return {
+        v: 2,
+        syncedAt: new Date().toISOString(),
+        total: packedRows.length,
+        dict: dict,
+        roomDb: [],
+        timelineTasks: tlRes.tasks || [],
+        rows: packedRows
+      };
+    }
+
+    // Pemetaan fungsi yang ditangani langsung oleh Supabase (sisanya otomatis ke Apps Script)
+    const SUPABASE_HANDLERS = {
+      pingServerHealth: async function() {
+        return { ok: true, serverTime: new Date().toISOString() };
+      },
+      loginUser: function(args) { return sbLoginUser(args[0], args[1]); },
+      getClaimDataCompact: function() { return sbGetClaimDataCompact(); },
+      getTimelineKerjaData: function() { return sbGetTimelineKerja(); }
+    };
+
+    // Hanya aktif jika dibuka di luar Google Apps Script (GitHub Pages)
     if (window.google && window.google.script && window.google.script.run) return;
 
     function createRunner(successHandler, failureHandler, userObject) {
       return new Proxy({}, {
         get: function(target, prop) {
-          if (prop === 'withSuccessHandler') {
-            return function(fn) { return createRunner(fn, failureHandler, userObject); };
-          }
-          if (prop === 'withFailureHandler') {
-            return function(fn) { return createRunner(successHandler, fn, userObject); };
-          }
-          if (prop === 'withUserObject') {
-            return function(obj) { return createRunner(successHandler, failureHandler, obj); };
-          }
+          if (prop === 'withSuccessHandler') return function(fn) { return createRunner(fn, failureHandler, userObject); };
+          if (prop === 'withFailureHandler') return function(fn) { return createRunner(successHandler, fn, userObject); };
+          if (prop === 'withUserObject') return function(obj) { return createRunner(successHandler, failureHandler, obj); };
           if (prop === 'then') return undefined;
 
           return function() {
             const args = Array.prototype.slice.call(arguments);
+            const fnName = String(prop);
+
+            // Jalur Cepat: Supabase
+            if (SUPABASE_HANDLERS[fnName]) {
+              SUPABASE_HANDLERS[fnName](args)
+                .then(function(result) {
+                  if (typeof successHandler === 'function') successHandler(result, userObject);
+                })
+                .catch(function(err) {
+                  if (typeof failureHandler === 'function') failureHandler(err, userObject);
+                  else console.error('Supabase Handler Error [' + fnName + ']:', err);
+                });
+              return;
+            }
+
+            // Jalur Fallback: Google Apps Script (untuk Upload PDF, Drive Sync, Simpan/Import)
             fetch(GAS_API_URL, {
               method: 'POST',
               redirect: 'follow',
               headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-              body: JSON.stringify({ fn: String(prop), args: args })
+              body: JSON.stringify({ fn: fnName, args: args })
             })
             .then(function(res) {
               if (!res.ok) throw new Error('HTTP Error ' + res.status);
@@ -2752,12 +2934,12 @@
               } else {
                 const err = new Error((data && data.error) ? data.error : 'Terjadi kesalahan di server Apps Script.');
                 if (typeof failureHandler === 'function') failureHandler(err, userObject);
-                else console.error('GAS API Error [' + String(prop) + ']:', err);
+                else console.error('GAS API Error [' + fnName + ']:', err);
               }
             })
             .catch(function(err) {
               if (typeof failureHandler === 'function') failureHandler(err, userObject);
-              else console.error('Fetch Error [' + String(prop) + ']:', err);
+              else console.error('Fetch Error [' + fnName + ']:', err);
             });
           };
         }
