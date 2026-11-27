@@ -2827,9 +2827,32 @@
           (isPendingSheet ? 16 : 0) |
           (isRevised ? 32 : 0);
 
-        const jenisRawat = sheetTarget === 'Rawat_Inap'
-          ? 'Rawat Inap'
-          : (r.jenis_layanan || 'Rawat Jalan');
+        const rawJenisLayanan = String(r.jenis_layanan || '').trim();
+        const isIgdService = /^(?:igd|ugd|instalasi\s*gawat\s*darurat|unit\s*gawat\s*darurat|gawat\s*darurat)$/i.test(rawJenisLayanan);
+        let jenisRawat = 'Rawat Jalan';
+        if (sheetTarget === 'Rawat_Inap') {
+          jenisRawat = 'Rawat Inap';
+        } else if (isPendingSheet) {
+          if (/^rawat\s*inap$/i.test(rawJenisLayanan)) {
+            jenisRawat = 'Rawat Inap';
+          } else if (isIgdService) {
+            jenisRawat = 'IGD';
+          } else {
+            jenisRawat = 'Rawat Jalan';
+          }
+        } else {
+          jenisRawat = isIgdService ? 'IGD' : 'Rawat Jalan';
+        }
+
+        let namaRuanganVal = String(r.nama_ruangan || '').trim();
+        if ((!namaRuanganVal || namaRuanganVal === '-') && sheetTarget !== 'Rawat_Inap') {
+          if (isIgdService) {
+            namaRuanganVal = 'IGD';
+          } else if (rawJenisLayanan && !/^(?:rawat\s*jalan|rawat\s*inap|-)$/i.test(rawJenisLayanan)) {
+            namaRuanganVal = rawJenisLayanan;
+          }
+        }
+        if (!namaRuanganVal) namaRuanganVal = '-';
 
         const tuple = [
           Number(r.id || 0),
@@ -2844,7 +2867,7 @@
           internStr(jenisRawat),
           internStr(r.hak_kelas || '-'),
           internStr(r.kelas_rawat || '-'),
-          internStr(r.nama_ruangan || '-'),
+          internStr(namaRuanganVal),
           internStr(r.nomor_kamar || '-'),
           String(r.tanggal_registrasi || ''),
           String(r.tanggal_pulang || ''),
@@ -2927,7 +2950,22 @@
         return { ok: true, serverTime: new Date().toISOString() };
       },
       loginUser: function(args) { return sbLoginUser(args[0], args[1]); },
-      getClaimDataCompact: function() { return sbGetClaimDataCompact(); },
+      getClaimDataCompact: async function(args) {
+        const forceSyncFromSheets = Boolean(args && args[0]);
+        if (forceSyncFromSheets) {
+          try {
+            await fetch(GAS_API_URL, {
+              method: 'POST',
+              redirect: 'follow',
+              headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+              body: JSON.stringify({ fn: 'migrasiSemuaKeSupabase', args: [] })
+            });
+          } catch (eSync) {
+            console.warn('Spreadsheet to Supabase background sync warning:', eSync);
+          }
+        }
+        return sbGetClaimDataCompact();
+      },
       getTimelineKerjaData: function() { return sbGetTimelineKerja(); }
     };
 
@@ -13478,7 +13516,7 @@
       showInfoDialog("Berhasil menarik " + count.toLocaleString("id-ID") + " baris data klaim terbaru dari Google Spreadsheet ke Dashboard!", "Penarikan Data Berhasil");
     }, function(err) {
       // Tombol sudah otomatis dipulihkan oleh loadData
-    }, false);
+    }, true);
   }
 
   function muatDataDariServer() {
