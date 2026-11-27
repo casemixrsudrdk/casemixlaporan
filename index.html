@@ -6503,20 +6503,68 @@
                 <div class="fw-bold text-dark" style="font-size:0.78rem;">
                   <i class="fa-solid fa-list-check text-success me-1"></i>Antrean Pengecekan Berkas PDF
                 </div>
-                <div class="form-check form-switch m-0">
-                  <input class="form-check-input" type="checkbox" id="cekPdfAutoNext" checked>
-                  <label class="form-check-label text-muted fw-semibold" for="cekPdfAutoNext" style="font-size:0.69rem;">Otomatis Lanjut Berikutnya</label>
+                <div class="d-flex align-items-center gap-2">
+                  <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-2 fw-bold" style="font-size:0.68rem;" onclick="resetFilterPeriodeCekPdf()" title="Reset Filter Tanggal, Bulan, Tahun & Layanan">
+                    <i class="fa-solid fa-rotate-left me-1"></i>Reset Filter
+                  </button>
+                  <div class="form-check form-switch m-0">
+                    <input class="form-check-input" type="checkbox" id="cekPdfAutoNext" checked>
+                    <label class="form-check-label text-muted fw-semibold" for="cekPdfAutoNext" style="font-size:0.69rem;">Otomatis Lanjut</label>
+                  </div>
+                </div>
+              </div>
+
+              <!-- BARIS FILTER TANGGAL, BULAN, TAHUN & JENIS LAYANAN -->
+              <div class="row g-1.5 mb-2">
+                <div class="col-6 col-sm-2">
+                  <label class="form-label text-muted fw-bold mb-0.5" style="font-size:0.63rem;letter-spacing:0.02em;">TANGGAL</label>
+                  <select id="cekPdfFilterHari" class="form-select form-select-sm fw-semibold" style="font-size:0.72rem;" onchange="bangunAntreanCekPdf_(null, true)">
+                    <option value="">Semua</option>
+                  </select>
+                </div>
+                <div class="col-6 col-sm-3">
+                  <label class="form-label text-muted fw-bold mb-0.5" style="font-size:0.63rem;letter-spacing:0.02em;">BULAN</label>
+                  <select id="cekPdfFilterBulan" class="form-select form-select-sm fw-semibold" style="font-size:0.72rem;" onchange="bangunAntreanCekPdf_(null, true)">
+                    <option value="">Semua Bulan</option>
+                    <option value="01">01 - Jan</option>
+                    <option value="02">02 - Feb</option>
+                    <option value="03">03 - Mar</option>
+                    <option value="04">04 - Apr</option>
+                    <option value="05">05 - Mei</option>
+                    <option value="06">06 - Jun</option>
+                    <option value="07">07 - Jul</option>
+                    <option value="08">08 - Agu</option>
+                    <option value="09">09 - Sep</option>
+                    <option value="10">10 - Okt</option>
+                    <option value="11">11 - Nov</option>
+                    <option value="12">12 - Des</option>
+                  </select>
+                </div>
+                <div class="col-6 col-sm-3">
+                  <label class="form-label text-muted fw-bold mb-0.5" style="font-size:0.63rem;letter-spacing:0.02em;">TAHUN</label>
+                  <select id="cekPdfFilterTahun" class="form-select form-select-sm fw-semibold" style="font-size:0.72rem;" onchange="bangunAntreanCekPdf_(null, true)">
+                    <option value="">Semua Tahun</option>
+                  </select>
+                </div>
+                <div class="col-6 col-sm-4">
+                  <label class="form-label text-muted fw-bold mb-0.5" style="font-size:0.63rem;letter-spacing:0.02em;">JENIS LAYANAN</label>
+                  <select id="cekPdfFilterLayanan" class="form-select form-select-sm fw-semibold" style="font-size:0.72rem;" onchange="bangunAntreanCekPdf_(null, true)">
+                    <option value="Semua">Semua Layanan</option>
+                    <option value="Rawat Inap">Rawat Inap (RANAP)</option>
+                    <option value="Rawat Jalan">Rawat Jalan (RAJAL)</option>
+                    <option value="IGD">IGD</option>
+                  </select>
                 </div>
               </div>
 
               <div class="row g-1.5 mb-2">
                 <div class="col-sm-7">
                   <select id="cekPdfFilterMode" class="form-select form-select-sm fw-semibold" style="font-size:0.73rem;" onchange="bangunAntreanCekPdf_(null, true)">
-                    <option value="FILTER_AKTIF_ADA_PDF" selected>Sesuai Filter Tabel · Sudah Ada PDF</option>
+                    <option value="FILTER_AKTIF_ADA_PDF" selected>Sesuai Filter Periode · Sudah Ada PDF</option>
                     <option value="LENGKAP_CEK_ULANG">Khusus Status LENGKAP (Cek Ulang Isi PDF)</option>
                     <option value="BELUM_LENGKAP_ADA_PDF">Belum Lengkap / Ada Catatan (Sudah Ada PDF)</option>
                     <option value="KHUSUS_PENDING">Khusus Kasus Pending (Klaim_Pending)</option>
-                    <option value="FILTER_AKTIF_SEMUA">Semua Berkas Filter Aktif (Termasuk Tanpa PDF)</option>
+                    <option value="FILTER_AKTIF_SEMUA">Semua Berkas Periode Ini (Termasuk Tanpa PDF)</option>
                   </select>
                 </div>
                 <div class="col-sm-5">
@@ -12898,12 +12946,91 @@
     bukaModalCekIsiPdf(targetItem);
   }
 
+  function initAndSyncFilterPeriodeCekPdf_(initialClaimObj) {
+    const hariEl = document.getElementById('cekPdfFilterHari');
+    const bulanEl = document.getElementById('cekPdfFilterBulan');
+    const tahunEl = document.getElementById('cekPdfFilterTahun');
+    const layananEl = document.getElementById('cekPdfFilterLayanan');
+
+    if (hariEl && hariEl.options.length <= 1) {
+      let hOpts = '<option value="">Semua</option>';
+      for (let i = 1; i <= 31; i++) {
+        const dd = String(i).padStart(2, '0');
+        hOpts += '<option value="' + dd + '">' + dd + '</option>';
+      }
+      hariEl.innerHTML = hOpts;
+    }
+
+    if (tahunEl) {
+      const prevYear = tahunEl.value;
+      const yearSet = new Set([String(new Date().getFullYear()), '2026', '2025', '2024']);
+      const pool = Array.isArray(allData) ? allData : [];
+      for (let i = 0; i < pool.length; i++) {
+        const dt = extractDatePartsUI(pool[i]);
+        if (dt && dt.year && /^\d{4}$/.test(dt.year)) yearSet.add(dt.year);
+      }
+      const sortedYears = Array.from(yearSet).sort().reverse();
+      let yOpts = '<option value="">Semua Tahun</option>';
+      sortedYears.forEach(function(yr) {
+        yOpts += '<option value="' + yr + '">' + yr + '</option>';
+      });
+      tahunEl.innerHTML = yOpts;
+      if (prevYear && yearSet.has(prevYear)) tahunEl.value = prevYear;
+    }
+
+    // Sinkronkan nilai awal dengan filter dashboard utama
+    let dashHari = (document.getElementById('filterHari') || {}).value || '';
+    let dashBulan = (document.getElementById('filterBulanSelect') || {}).value || '';
+    let dashTahun = (document.getElementById('filterTahun') || {}).value || '';
+    const dashTanggalFull = (document.getElementById('filterTanggal') || {}).value || '';
+    let dashLayanan = (document.getElementById('filterLayanan') || {}).value || 'Semua';
+
+    if (dashTanggalFull && /^\d{4}-\d{2}-\d{2}$/.test(dashTanggalFull)) {
+      const parts = dashTanggalFull.split('-');
+      dashTahun = parts[0];
+      dashBulan = parts[1];
+      dashHari = parts[2];
+    }
+
+    if (initialClaimObj) {
+      const cDt = extractDatePartsUI(initialClaimObj);
+      const cLayanan = String(initialClaimObj.jenis_rawat || '').trim();
+      if (dashTahun && cDt.year && cDt.year !== dashTahun) dashTahun = cDt.year;
+      if (dashBulan && cDt.month && cDt.month !== dashBulan) dashBulan = cDt.month;
+      if (dashHari && cDt.day && cDt.day !== dashHari) dashHari = cDt.day;
+      if (dashLayanan !== 'Semua' && cLayanan && cLayanan !== dashLayanan) dashLayanan = cLayanan;
+    }
+
+    if (hariEl) hariEl.value = dashHari;
+    if (bulanEl) bulanEl.value = dashBulan;
+    if (tahunEl) tahunEl.value = dashTahun;
+    if (layananEl) {
+      const allowedLayanan = ['Semua', 'Rawat Inap', 'Rawat Jalan', 'IGD'];
+      layananEl.value = allowedLayanan.indexOf(dashLayanan) !== -1 ? dashLayanan : 'Semua';
+    }
+  }
+
+  function resetFilterPeriodeCekPdf() {
+    const hariEl = document.getElementById('cekPdfFilterHari');
+    const bulanEl = document.getElementById('cekPdfFilterBulan');
+    const tahunEl = document.getElementById('cekPdfFilterTahun');
+    const layananEl = document.getElementById('cekPdfFilterLayanan');
+    const searchEl = document.getElementById('cekPdfSearchInput');
+    if (hariEl) hariEl.value = '';
+    if (bulanEl) bulanEl.value = '';
+    if (tahunEl) tahunEl.value = '';
+    if (layananEl) layananEl.value = 'Semua';
+    if (searchEl) searchEl.value = '';
+    bangunAntreanCekPdf_(null, false);
+  }
+
   function bukaModalCekIsiPdf(initialClaimObj) {
     if (!canAccessPdfReview_()) {
       showInfoDialog('Fitur Cek Ulang Isi PDF khusus untuk akun dengan role Admin Berkas dan Super Admin.', 'Akses Dibatasi');
       return;
     }
     initAllModalsSafely();
+    initAndSyncFilterPeriodeCekPdf_(initialClaimObj);
     const filterEl = document.getElementById('cekPdfFilterMode');
     if (initialClaimObj && filterEl) {
       const hasLink = Boolean(initialClaimObj.link && String(initialClaimObj.link).trim() !== '' && String(initialClaimObj.link).trim() !== '-');
@@ -12933,18 +13060,33 @@
     const mode = modeEl ? modeEl.value : 'FILTER_AKTIF_ADA_PDF';
     const qRaw = String((document.getElementById('cekPdfSearchInput') || {}).value || '').trim().toLowerCase();
 
+    const fHari = String((document.getElementById('cekPdfFilterHari') || {}).value || '').trim();
+    const fBulan = String((document.getElementById('cekPdfFilterBulan') || {}).value || '').trim();
+    const fTahun = String((document.getElementById('cekPdfFilterTahun') || {}).value || '').trim();
+    const fLayanan = String((document.getElementById('cekPdfFilterLayanan') || {}).value || 'Semua').trim();
+
     const prevSelected = (!targetClaimToSelect && preserveCurrentSelection && _cekPdfQueue[_cekPdfIndex])
       ? _cekPdfQueue[_cekPdfIndex]
       : targetClaimToSelect;
 
-    const basePool = (Array.isArray(currentTableFiltered) && currentTableFiltered.length > 0)
-      ? currentTableFiltered
-      : (Array.isArray(allData) ? allData : []);
+    const basePool = Array.isArray(allData) ? allData : [];
 
     _cekPdfQueue = basePool.filter(function(d) {
       if (!d) return false;
       const isBayi = Boolean(d.is_bayi_sehat) || isBayiSehatBySepAndNameUI(d.no_sep, d.nama_pasien, d.tindak_lanjut);
       if (isBayi) return false;
+
+      if (fLayanan && fLayanan !== 'Semua') {
+        if (String(d.jenis_rawat || '').trim() !== fLayanan) return false;
+      }
+
+      if (fTahun || fBulan || fHari) {
+        const dt = extractDatePartsUI(d);
+        if (fTahun && dt.year !== fTahun) return false;
+        if (fBulan && dt.month !== fBulan) return false;
+        if (fHari && dt.day !== fHari) return false;
+      }
+
       const hasPdf = Boolean(d.link && String(d.link).trim() !== '' && String(d.link).trim() !== '-');
       const isPend = Boolean(d.is_pending_sheet || d.sheetTarget === 'Klaim_Pending' || d.status_pending === 'Ya');
 
