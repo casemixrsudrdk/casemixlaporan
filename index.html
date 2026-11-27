@@ -2767,25 +2767,145 @@
       };
     }
 
-    // 2. Tarik Data Timeline via Supabase
-    async function sbGetTimelineKerja() {
-      const rows = await fetchAllRows('timeline_kerja');
+    function sanitizeSbTimelineTime_(val) {
+      const s = String(val || '').trim();
+      if (!s || /^1899-12-3[01]$/i.test(s) || /^\d{4}-\d{2}-\d{2}$/.test(s)) return '15:00';
+      const mTime = s.match(/(?:^|T|\s)(\d{1,2}):(\d{2})/);
+      if (mTime) {
+        const hh = Math.min(23, Math.max(0, parseInt(mTime[1], 10) || 0));
+        const mm = Math.min(59, Math.max(0, parseInt(mTime[2], 10) || 0));
+        return String(hh).padStart(2, '0') + ':' + String(mm).padStart(2, '0');
+      }
+      return '15:00';
+    }
+
+    // 2. Tarik Data Timeline via Supabase (Otomatis memperbaiki baris 1899-12-30 dari Google Sheet bila terdeteksi)
+    let _sbTimelineAutoRepaired = false;
+    async function sbGetTimelineKerja(forceSyncFromSheets) {
+      let rows = await fetchAllRows('timeline_kerja');
+      const hasCorruptedTime = rows.some(function(r) {
+        return /^1899-12-3[01]/i.test(String((r && r.jam_deadline) || '').trim());
+      });
+
+      if ((forceSyncFromSheets || (hasCorruptedTime && !_sbTimelineAutoRepaired))) {
+        _sbTimelineAutoRepaired = true;
+        try {
+          const gasRes = await fetch(GAS_API_URL, {
+            method: 'POST',
+            redirect: 'follow',
+            headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+            body: JSON.stringify({ fn: 'getTimelineKerjaData', args: [true] })
+          });
+          if (gasRes.ok) {
+            const gasJson = await gasRes.json();
+            if (gasJson && gasJson.ok && gasJson.result && Array.isArray(gasJson.result.tasks) && gasJson.result.tasks.length > 0) {
+              const freshTasks = gasJson.result.tasks;
+              try {
+                await db.from('timeline_kerja').delete().gt('id', 0);
+                const toInsert = freshTasks.map(function(t) {
+                  return {
+                    id_kegiatan: String(t.id_kegiatan || t.id || ''),
+                    judul_kegiatan: String(t.judul_kegiatan || t.judul || ''),
+                    tanggal_deadline: String(t.tanggal_deadline || t.tanggal || ''),
+                    jam_deadline: sanitizeSbTimelineTime_(t.jam_deadline || t.jam || '15:00'),
+                    nama_pic: String(t.nama_pic || t.pic || 'Tim Casemix'),
+                    status_progres: String(t.status_progres || t.status || 'Belum Mulai'),
+                    prioritas: String(t.prioritas || 'Normal'),
+                    catatan_tindak_lanjut: String(t.catatan_tindak_lanjut || t.catatan || ''),
+                    updated_at: String(t.updated_at || t.updatedAt || new Date().toISOString())
+                  };
+                });
+                if (toInsert.length > 0) {
+                  await db.from('timeline_kerja').insert(toInsert);
+                }
+              } catch (eUpdSbTl) {
+                console.warn('Supabase timeline table refresh warning:', eUpdSbTl);
+              }
+              return { success: true, ok: true, tasks: freshTasks };
+            }
+          }
+        } catch (eGasTl) {
+          console.warn('Apps Script Timeline sync warning:', eGasTl);
+        }
+        rows = await fetchAllRows('timeline_kerja');
+      }
+
       const tasks = rows.map(function(r, idx) {
         return {
           rowNumber: r.id || (idx + 2),
           id: r.id_kegiatan || String(r.id),
+          id_kegiatan: r.id_kegiatan || String(r.id),
           judul: r.judul_kegiatan || '',
+          judul_kegiatan: r.judul_kegiatan || '',
           tanggal: r.tanggal_deadline || '',
-          jam: r.jam_deadline || '15:00',
+          tanggal_deadline: r.tanggal_deadline || '',
+          jam: sanitizeSbTimelineTime_(r.jam_deadline),
+          jam_deadline: sanitizeSbTimelineTime_(r.jam_deadline),
           pic: r.nama_pic || 'Tim Casemix',
+          nama_pic: r.nama_pic || 'Tim Casemix',
           status: r.status_progres || 'Belum Mulai',
+          status_progres: r.status_progres || 'Belum Mulai',
           prioritas: r.prioritas || 'Normal',
           catatan: r.catatan_tindak_lanjut || '',
-          updatedAt: r.updated_at || ''
+          catatan_tindak_lanjut: r.catatan_tindak_lanjut || '',
+          updatedAt: r.updated_at || '',
+          updated_at: r.updated_at || ''
         };
       });
       return { success: true, ok: true, tasks: tasks };
     }
+
+    // Sinkronisasi langsung perubahan Timeline Kerja (Tambah / Edit / Status / Hapus) ke Supabase dari browser
+    window.sbSyncTimelineTaskUpsert = async function(taskObj) {
+      try {
+        if (!db || !taskObj) return false;
+        const cleanId = String(taskObj.id_kegiatan || taskObj.id || '').trim();
+        if (!cleanId) return false;
+        const record = {
+          id_kegiatan: cleanId,
+          judul_kegiatan: String(taskObj.judul_kegiatan || taskObj.judul || ''),
+          tanggal_deadline: String(taskObj.tanggal_deadline || taskObj.tanggal || ''),
+          jam_deadline: sanitizeSbTimelineTime_(taskObj.jam_deadline || taskObj.jam || '15:00'),
+          nama_pic: String(taskObj.nama_pic || taskObj.pic || 'Tim Casemix'),
+          status_progres: String(taskObj.status_progres || taskObj.status || 'Belum Mulai'),
+          prioritas: String(taskObj.prioritas || 'Normal'),
+          catatan_tindak_lanjut: String(taskObj.catatan_tindak_lanjut || taskObj.catatan || ''),
+          updated_at: String(taskObj.updated_at || taskObj.updatedAt || new Date().toISOString())
+        };
+        const { data: existing } = await db.from('timeline_kerja').select('id').eq('id_kegiatan', cleanId).limit(1);
+        if (existing && existing.length > 0) {
+          await db.from('timeline_kerja').update(record).eq('id_kegiatan', cleanId);
+        } else {
+          await db.from('timeline_kerja').insert([record]);
+        }
+        return true;
+      } catch (eTlUpsert) {
+        console.warn('Supabase timeline upsert warning:', eTlUpsert);
+        return false;
+      }
+    };
+
+    window.sbSyncTimelineTaskDelete = async function(idKegiatan, rowNumber) {
+      try {
+        if (!db) return false;
+        const cleanId = String(idKegiatan || '').trim();
+        if (cleanId) {
+          await db.from('timeline_kerja').delete().eq('id_kegiatan', cleanId);
+          const baseId = cleanId.replace(/_R\d+$/i, '');
+          if (baseId && baseId !== cleanId) {
+            await db.from('timeline_kerja').delete().eq('id_kegiatan', baseId);
+          }
+          return true;
+        } else if (Number(rowNumber) > 0) {
+          await db.from('timeline_kerja').delete().eq('id', Number(rowNumber));
+          return true;
+        }
+        return false;
+      } catch (eTlDel) {
+        console.warn('Supabase timeline delete warning:', eTlDel);
+        return false;
+      }
+    };
 
     // 3. Tarik Data Klaim Kompak (Format Identik dengan getClaimDataCompact di Code.gs)
     async function sbGetClaimDataCompact() {
@@ -2966,7 +3086,7 @@
         }
         return sbGetClaimDataCompact();
       },
-      getTimelineKerjaData: function() { return sbGetTimelineKerja(); }
+      getTimelineKerjaData: function(args) { return sbGetTimelineKerja(Boolean(args && args[0])); }
     };
 
     // Hanya aktif jika dibuka di luar Google Apps Script (GitHub Pages)
@@ -20924,20 +21044,34 @@
     ];
   }
 
+  function normalizeTimelineTimeClient_(rawJam) {
+    const s = String(rawJam || '').trim();
+    if (!s || /^1899-12-3[01]$/i.test(s) || /^\d{4}-\d{2}-\d{2}$/.test(s)) return '15:00';
+    const mTime = s.match(/(?:^|T|\s)(\d{1,2})[:.](\d{2})/);
+    if (mTime) {
+      const hh = Math.min(23, Math.max(0, parseInt(mTime[1], 10) || 0));
+      const mm = Math.min(59, Math.max(0, parseInt(mTime[2], 10) || 0));
+      return String(hh).padStart(2, '0') + ':' + String(mm).padStart(2, '0');
+    }
+    return '15:00';
+  }
+
   function computeTimelineCountdownClient_(task, nowMs) {
     const curMs = nowMs || Date.now();
     const dStr = String((task && task.tanggal_deadline) || '').trim();
-    const tStr = String((task && task.jam_deadline) || '15:00').trim();
+    const tStr = normalizeTimelineTimeClient_(task && task.jam_deadline);
     const partsD = dStr.split('-');
     const partsT = tStr.split(':');
     let targetMs = curMs;
     if (partsD.length === 3) {
+      const hh = parseInt(partsT[0], 10);
+      const mm = parseInt(partsT[1], 10);
       const dt = new Date(
         Number(partsD[0]),
         Number(partsD[1]) - 1,
         Number(partsD[2]),
-        Number(partsT[0] || 15),
-        Number(partsT[1] || 0),
+        isNaN(hh) ? 15 : hh,
+        isNaN(mm) ? 0 : mm,
         0,
         0
       );
@@ -20998,9 +21132,9 @@
       if (!t || typeof t !== 'object') continue;
       const id = String(t.id_kegiatan || t.id || ('TL_ROW_' + (i + 2))).trim();
       const judul = String(t.judul_kegiatan || t.judul || '').trim();
-      const tgl = String(t.tanggal_deadline || t.tanggal || '').trim();
+      const tgl = String(t.tanggal_deadline || t.tanggal || '').trim().slice(0, 10);
       if (!judul && !tgl) continue;
-      const jam = String(t.jam_deadline || t.jam || '15:00').trim() || '15:00';
+      const jam = normalizeTimelineTimeClient_(t.jam_deadline || t.jam || '15:00');
       const pic = String(t.nama_pic || t.pic || 'Tim Casemix').trim() || 'Tim Casemix';
       const rawStatus = String(t.status_progres || t.status || 'Belum Mulai').trim();
       const status = /^selesai$/i.test(rawStatus)
@@ -21056,7 +21190,7 @@
     }
   }
 
-  function loadTimelineFromServer(silent) {
+  function loadTimelineFromServer(silent, forceSyncFromSheets) {
     const hasGasBridge = (typeof google !== 'undefined' && google && google.script && google.script.run);
     try {
       const cached = localStorage.getItem(TIMELINE_CACHE_KEY);
@@ -21096,7 +21230,7 @@
             showToast('Gagal menarik sheet Timeline_Kerja: ' + (err && err.message ? err.message : err), 'warning');
           }
         })
-        .getTimelineKerjaData();
+        .getTimelineKerjaData(Boolean(forceSyncFromSheets));
     } else {
       if (!_timelineTasks || _timelineTasks.length === 0) {
         _timelineTasks = buildDefaultTimelineTasksClient_();
@@ -21109,7 +21243,7 @@
 
   function refreshTimelineDataManual() {
     showToast('Menarik jadwal terbaru dari sheet Timeline_Kerja...', 'info');
-    loadTimelineFromServer(false);
+    loadTimelineFromServer(false, true);
   }
 
   function updateTimelineCountdownBannerUI() {
@@ -21631,6 +21765,10 @@
       if (inst) inst.hide();
     }
 
+    if (typeof window.sbSyncTimelineTaskUpsert === 'function') {
+      window.sbSyncTimelineTaskUpsert(payload);
+    }
+
     if (typeof google !== 'undefined' && google.script && google.script.run) {
       google.script.run
         .withSuccessHandler(function(res) {
@@ -21669,6 +21807,10 @@
     renderTimelineKerjaUI();
     updateTimelineCountdownBannerUI();
 
+    if (typeof window.sbSyncTimelineTaskUpsert === 'function') {
+      window.sbSyncTimelineTaskUpsert(updatedTask);
+    }
+
     if (typeof google !== 'undefined' && google.script && google.script.run) {
       google.script.run
         .withSuccessHandler(function(res) {
@@ -21705,6 +21847,10 @@
     if (modalEl && typeof bootstrap !== 'undefined') {
       const inst = bootstrap.Modal.getInstance(modalEl);
       if (inst) inst.hide();
+    }
+
+    if (typeof window.sbSyncTimelineTaskDelete === 'function') {
+      window.sbSyncTimelineTaskDelete(idVal, rowNumberVal);
     }
 
     if (typeof google !== 'undefined' && google.script && google.script.run) {
