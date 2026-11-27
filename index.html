@@ -6838,6 +6838,7 @@
   let modalPanduanDatabase;
   let modalImportGabungan;
   let modalLaporanPdfJkn;
+  let modalCekIsiPdfInstance;
   let currentPage = 1;
   function getRowsPerPage() {
     return (typeof window !== 'undefined' && window.innerWidth < 992) ? 25 : 50;
@@ -7096,7 +7097,7 @@
       if (!modalPanduanDatabase) modalPanduanDatabase = makeModal('modalPanduanDatabase');
       if (!modalImportGabungan) modalImportGabungan = makeModal('modalImportGabungan');
       if (!modalLaporanPdfJkn) modalLaporanPdfJkn = makeModal('modalLaporanPdfJkn');
-      if (!window.modalCekIsiPdf) window.modalCekIsiPdf = makeModal('modalCekIsiPdf');
+      if (!modalCekIsiPdfInstance) modalCekIsiPdfInstance = makeModal('modalCekIsiPdf');
     } catch (e) {}
   }
 
@@ -12757,8 +12758,15 @@
     const searchEl = document.getElementById('cekPdfSearchInput');
     if (searchEl && initialClaimObj) searchEl.value = '';
     bangunAntreanCekPdf_(initialClaimObj, false);
-    if (window.modalCekIsiPdf) {
-      window.modalCekIsiPdf.show();
+    const modalEl = document.getElementById('modalCekIsiPdf');
+    if (modalEl && typeof bootstrap !== 'undefined' && bootstrap.Modal) {
+      modalCekIsiPdfInstance = bootstrap.Modal.getOrCreateInstance(modalEl);
+      modalCekIsiPdfInstance.show();
+    } else if (modalCekIsiPdfInstance && typeof modalCekIsiPdfInstance.show === 'function') {
+      modalCekIsiPdfInstance.show();
+    } else if (modalEl) {
+      modalCekIsiPdfInstance = createFallbackModalController_(modalEl);
+      modalCekIsiPdfInstance.show();
     }
   }
 
