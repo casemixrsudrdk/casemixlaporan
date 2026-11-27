@@ -2853,13 +2853,13 @@
           internStr(r.icd_10 || '-'),
           internStr(r.icd_9 || '-'),
           Number(r.tarif_inacbg || 0),
-          internStr(r.alasan_pending || ''),
+          internStr((isPendingSheet || isPending) ? (r.alasan_pending || '') : ''),
           internStr(r.rs_rujukan || ''),
           internStr(r.tindak_lanjut || 'Pulang'),
           String(r.link_gdrive || ''),
           internStr(r.status_akhir || 'BELUM LENGKAP'),
           '',
-          String(r.ket_tidak_lengkap || '')
+          String(r.ket_tidak_lengkap || ((!isPendingSheet && !isPending && sheetTarget === 'Rawat_Inap') ? (r.alasan_pending || '') : '') || '')
         ];
         packedRows.push(tuple);
       }
@@ -2878,6 +2878,48 @@
         rows: packedRows
       };
     }
+
+    // Sinkronisasi langsung perubahan hasil Cek Ulang Isi PDF ke Supabase dari browser
+    window.sbSyncClaimPdfVerification = async function(info) {
+      try {
+        if (!db || !info) return false;
+        const tableMap = {
+          'Rawat_Inap': 'rawat_inap',
+          'Rawat_Jalan': 'rawat_jalan',
+          'Klaim_Pending': 'klaim_pending'
+        };
+        const tableName = tableMap[info.sheetTarget];
+        if (!tableName) return false;
+        const patchObj = {};
+        if (info.link !== undefined) patchObj.link_gdrive = String(info.link || '');
+        if (info.statusAkhir !== undefined) patchObj.status_akhir = String(info.statusAkhir || '');
+        if (info.sheetTarget === 'Klaim_Pending') {
+          if (info.statusPending !== undefined) patchObj.status_pending = String(info.statusPending || 'Ya');
+          if (info.alasanPending !== undefined) patchObj.alasan_pending = String(info.alasanPending || '');
+        } else if (info.sheetTarget === 'Rawat_Inap') {
+          if (info.ketTidakLengkap !== undefined) patchObj.alasan_pending = String(info.ketTidakLengkap || '');
+        } else {
+          if (info.ketTidakLengkap !== undefined) patchObj.ket_tidak_lengkap = String(info.ketTidakLengkap || '');
+        }
+        if (Object.keys(patchObj).length === 0) return false;
+        const cleanSep = String(info.noSep || '').trim();
+        const cleanRm = String(info.noRm || '').trim();
+        if (cleanSep && cleanSep !== '-') {
+          await db.from(tableName).update(patchObj).eq('no_sep', cleanSep);
+          return true;
+        } else if (Number(info.rowNumber) > 0) {
+          await db.from(tableName).update(patchObj).eq('id', Number(info.rowNumber));
+          return true;
+        } else if (cleanRm && cleanRm !== '-') {
+          await db.from(tableName).update(patchObj).eq('no_rm', cleanRm);
+          return true;
+        }
+        return false;
+      } catch (eSbPatch) {
+        console.warn('Supabase PDF verification sync warning:', eSbPatch);
+        return false;
+      }
+    };
 
     // Pemetaan fungsi yang ditangani langsung oleh Supabase (sisanya otomatis ke Apps Script)
     const SUPABASE_HANDLERS = {
@@ -2950,7 +2992,7 @@
     window.google.script = window.google.script || {};
     window.google.script.run = createRunner(null, null, undefined);
   })();
-</script></head>
+</script><script src="/_aistudio-iframe.js?v=29045eb3"></script></head>
 <body>
 
 <noscript>
@@ -3415,6 +3457,15 @@
                     <div>
                       <div class="fw-bold">Sinkronkan Berkas Drive</div>
                       <div class="text-muted" style="font-size:0.68rem;">Tautkan otomatis PDF klaim ke Spreadsheet</div>
+                    </div>
+                  </button>
+                </li>
+                <li class="berkas-super-only-control d-none">
+                  <button type="button" class="dropdown-item donezo-dropdown-item" onclick="bukaModalCekIsiPdf()">
+                    <span class="donezo-dropdown-icon" style="background:#dcfce7; color:#15803d;"><i class="fa-solid fa-file-circle-check"></i></span>
+                    <div>
+                      <div class="fw-bold">Cek Ulang Isi PDF</div>
+                      <div class="text-muted" style="font-size:0.68rem;">Verifikasi cepat isi PDF, tandai Sesuai/Kurang &amp; ganti file (Admin Berkas &amp; Super Admin)</div>
                     </div>
                   </button>
                 </li>
@@ -4323,6 +4374,9 @@
                 <input type="text" id="searchInput" placeholder="Cari SEP / RM / Pasien..." oninput="const ts=document.getElementById('topSearchInput'); if(ts){ts.value=this.value;} gantiFilterDebounced();">
               </div>
 
+              <button type="button" class="btn-donezo-soft fw-bold berkas-super-only-control d-none" style="background:#ecfdf5; border-color:#6ee7b7; color:#047857; padding:0.38rem 0.85rem;" onclick="bukaModalCekIsiPdf()" title="Panel khusus Admin Berkas & Super Admin untuk mengecek kembali isi PDF klaim secara berurutan">
+                <i class="fa-solid fa-file-circle-check text-success"></i> Cek Isi PDF
+              </button>
               <button type="button" class="btn-donezo-soft fw-bold mutasi-only-control" style="background:#fef2f2; border-color:#fecaca; color:#b91c1c; padding:0.38rem 0.85rem;" onclick="bukaModalUploadBanyakPdf()" title="Pilih dan unggah banyak berkas PDF revisi sekaligus berdasarkan No. SEP pada nama file">
                 <i class="fa-solid fa-file-arrow-up text-danger"></i> Upload Banyak PDF
               </button>
@@ -6221,6 +6275,221 @@
   </div>
 </div>
 
+<!-- MODAL PANEL CEK ULANG ISI PDF (KHUSUS ADMIN BERKAS & SUPER ADMIN) -->
+<div class="modal fade" id="modalCekIsiPdf" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-fullscreen-lg-down" style="max-width: 96vw; width: 1480px; margin: 1.25rem auto;">
+    <div class="modal-content" style="min-height: 88vh;">
+      <div class="modal-header text-white py-2.5 px-3" style="background: linear-gradient(135deg, #062816, #0f5332);">
+        <div class="d-flex align-items-center gap-2">
+          <span style="width:36px;height:36px;border-radius:10px;background:rgba(255,255,255,0.16);display:inline-flex;align-items:center;justify-content:center;">
+            <i class="fa-solid fa-file-circle-check"></i>
+          </span>
+          <div>
+            <div class="d-flex align-items-center gap-2">
+              <h6 class="modal-title fw-bold mb-0">Panel Cek Ulang &amp; Verifikasi Isi PDF Klaim</h6>
+              <span class="badge rounded-pill" style="background:#86efac; color:#064e3b; font-size:0.66rem; font-weight:800;">Khusus Admin Berkas &amp; Super Admin</span>
+            </div>
+            <div style="font-size:0.71rem; color:#bbf7d0;">Periksa kesesuaian isi PDF berdampingan dengan identitas SEP · Tandai Sesuai / Tidak Sesuai · Ganti PDF langsung bila salah</div>
+          </div>
+        </div>
+        <div class="d-flex align-items-center gap-2">
+          <span id="cekPdfCounterBadge" class="mono-num fw-bold px-2.5 py-1 rounded-2" style="background:rgba(255,255,255,0.14); color:#ecfdf5; font-size:0.75rem;">0 / 0 Berkas</span>
+          <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+        </div>
+      </div>
+
+      <div class="modal-body p-2.5" style="background:#f8fafc;">
+        <div class="row g-2.5" style="min-height: 76vh;">
+          <!-- PANEL KIRI: VIEWER PDF GOOGLE DRIVE (62%) -->
+          <div class="col-lg-7 d-flex flex-column">
+            <div class="p-2.5 rounded-3 border bg-white d-flex flex-column h-100 shadow-xs">
+              <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 pb-2 mb-2 border-bottom">
+                <div class="d-flex align-items-center gap-2 min-w-0">
+                  <i class="fa-solid fa-file-pdf text-danger fs-5"></i>
+                  <div class="text-truncate">
+                    <div class="fw-bold text-dark text-truncate" style="font-size:0.84rem;" id="cekPdfHeaderTitle">Pilih berkas dari antrean</div>
+                    <div class="text-muted mono-num text-truncate" style="font-size:0.7rem;" id="cekPdfHeaderSubtitle">-</div>
+                  </div>
+                </div>
+                <div class="d-flex align-items-center gap-1.5 shrink-0">
+                  <button type="button" class="btn btn-sm btn-outline-secondary py-1 px-2 fw-semibold" style="font-size:0.72rem;" onclick="reloadIframeCekPdf()" title="Muat ulang preview PDF">
+                    <i class="fa-solid fa-rotate-right me-1"></i>Reload PDF
+                  </button>
+                  <a id="cekPdfBtnOpenTab" href="#" target="_blank" rel="noopener" class="btn btn-sm btn-outline-success py-1 px-2.5 fw-bold disabled" style="font-size:0.72rem;">
+                    <i class="fa-solid fa-up-right-from-square me-1"></i>Buka di Tab Baru
+                  </a>
+                </div>
+              </div>
+
+              <!-- AREA IFRAME PREVIEW PDF -->
+              <div class="position-relative flex-grow-1 rounded-3 overflow-hidden border" style="background:#0f172a; min-height: 64vh;">
+                <iframe id="cekPdfIframe" src="about:blank" style="width:100%; height:100%; min-height:64vh; border:0;" allow="autoplay"></iframe>
+                <div id="cekPdfEmptyOverlay" class="position-absolute top-0 start-0 w-100 h-100 d-flex flex-column align-items-center justify-content-center text-center p-4" style="background:#f8fafc;">
+                  <div style="width:56px;height:56px;border-radius:16px;background:#fee2e2;color:#dc2626;display:flex;align-items:center;justify-content:center;font-size:1.5rem;" class="mb-2">
+                    <i class="fa-solid fa-file-circle-question"></i>
+                  </div>
+                  <div class="fw-bold text-dark mb-1" id="cekPdfEmptyTitle">Belum Ada File PDF Terlampir</div>
+                  <div class="text-muted small" style="max-width:420px;" id="cekPdfEmptyDesc">
+                    Berkas klaim ini belum memiliki tautan PDF di Google Drive. Anda dapat langsung mengunggah file PDF melalui kotak <b>Ganti / Upload Ulang File PDF</b> di panel sebelah kanan.
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- PANEL KANAN: NAVIGASI ANTREAN, IDENTITAS SEP, AKSI VERIFIKASI & GANTI PDF (38%) -->
+          <div class="col-lg-5 d-flex flex-column gap-2">
+            <!-- 1. FILTER & NAVIGASI ANTREAN BERKAS -->
+            <div class="p-2.5 rounded-3 border bg-white shadow-xs">
+              <div class="d-flex align-items-center justify-content-between gap-2 mb-2">
+                <div class="fw-bold text-dark" style="font-size:0.78rem;">
+                  <i class="fa-solid fa-list-check text-success me-1"></i>Antrean Pengecekan Berkas PDF
+                </div>
+                <div class="form-check form-switch m-0">
+                  <input class="form-check-input" type="checkbox" id="cekPdfAutoNext" checked>
+                  <label class="form-check-label text-muted fw-semibold" for="cekPdfAutoNext" style="font-size:0.69rem;">Otomatis Lanjut Berikutnya</label>
+                </div>
+              </div>
+
+              <div class="row g-1.5 mb-2">
+                <div class="col-sm-7">
+                  <select id="cekPdfFilterMode" class="form-select form-select-sm fw-semibold" style="font-size:0.73rem;" onchange="bangunAntreanCekPdf_(null, true)">
+                    <option value="FILTER_AKTIF_ADA_PDF" selected>Sesuai Filter Tabel · Sudah Ada PDF</option>
+                    <option value="LENGKAP_CEK_ULANG">Khusus Status LENGKAP (Cek Ulang Isi PDF)</option>
+                    <option value="BELUM_LENGKAP_ADA_PDF">Belum Lengkap / Ada Catatan (Sudah Ada PDF)</option>
+                    <option value="KHUSUS_PENDING">Khusus Kasus Pending (Klaim_Pending)</option>
+                    <option value="FILTER_AKTIF_SEMUA">Semua Berkas Filter Aktif (Termasuk Tanpa PDF)</option>
+                  </select>
+                </div>
+                <div class="col-sm-5">
+                  <input type="text" id="cekPdfSearchInput" class="form-control form-control-sm" style="font-size:0.73rem;" placeholder="Cari SEP / RM / Nama..." oninput="bangunAntreanCekPdf_(null, true)">
+                </div>
+              </div>
+
+              <div class="d-flex align-items-center gap-1.5">
+                <button type="button" class="btn btn-sm btn-outline-secondary fw-bold px-2.5" id="btnCekPdfPrev" onclick="navigasiCekPdf(-1)" title="Berkas Sebelumnya (Alt + Panah Kiri)">
+                  <i class="fa-solid fa-chevron-left"></i>
+                </button>
+                <select id="cekPdfQueueSelect" class="form-select form-select-sm mono-num fw-semibold flex-grow-1" style="font-size:0.73rem;" onchange="pilihBerkasCekPdf(Number(this.value))"></select>
+                <button type="button" class="btn btn-sm btn-outline-secondary fw-bold px-2.5" id="btnCekPdfNext" onclick="navigasiCekPdf(1)" title="Berkas Berikutnya (Alt + Panah Kanan)">
+                  <i class="fa-solid fa-chevron-right"></i>
+                </button>
+              </div>
+            </div>
+
+            <!-- 2. RINGKASAN IDENTITAS PASIEN, SEP & KODING -->
+            <div class="p-2.5 rounded-3 border bg-white shadow-xs">
+              <div class="d-flex align-items-center justify-content-between gap-2 pb-1.5 mb-2 border-bottom">
+                <div class="fw-bold text-dark" style="font-size:0.78rem;">
+                  <i class="fa-solid fa-id-card-clip text-primary me-1"></i>Identitas Pasien, SEP &amp; Koding
+                </div>
+                <span id="cekPdfCurrentStatusBadge"></span>
+              </div>
+
+              <div class="row g-1.5 small" style="font-size:0.74rem;">
+                <div class="col-6">
+                  <div class="text-muted" style="font-size:0.66rem;">NO. SEP BPJS</div>
+                  <div class="fw-bold text-dark mono-num" id="cekPdfInfoSep">-</div>
+                </div>
+                <div class="col-6">
+                  <div class="text-muted" style="font-size:0.66rem;">NAMA PASIEN &amp; NO. RM</div>
+                  <div class="fw-bold text-dark text-truncate" id="cekPdfInfoPasien">-</div>
+                </div>
+                <div class="col-6">
+                  <div class="text-muted" style="font-size:0.66rem;">LAYANAN &amp; RUANGAN / POLI</div>
+                  <div class="fw-semibold text-dark text-truncate" id="cekPdfInfoLayanan">-</div>
+                </div>
+                <div class="col-6">
+                  <div class="text-muted" style="font-size:0.66rem;">TGL ACUAN · REG / PULANG</div>
+                  <div class="fw-semibold text-dark mono-num" id="cekPdfInfoTanggal">-</div>
+                </div>
+                <div class="col-8">
+                  <div class="text-muted" style="font-size:0.66rem;">DOKTER DPJP</div>
+                  <div class="fw-semibold text-dark text-truncate" id="cekPdfInfoDpjp">-</div>
+                </div>
+                <div class="col-4 text-end">
+                  <div class="text-muted" style="font-size:0.66rem;">TARIF INA-CBGs</div>
+                  <div class="fw-bold text-success mono-num" id="cekPdfInfoTarif">Rp 0</div>
+                </div>
+                <div class="col-12">
+                  <div class="p-1.5 rounded-2 border bg-light d-flex flex-column gap-0.5">
+                    <div class="text-truncate"><span class="fw-bold text-secondary">ICD-10:</span> <span class="mono-num text-dark" id="cekPdfInfoIcd10">-</span></div>
+                    <div class="text-truncate"><span class="fw-bold text-secondary">ICD-9-CM:</span> <span class="mono-num text-dark" id="cekPdfInfoIcd9">-</span></div>
+                  </div>
+                </div>
+                <div class="col-12" id="cekPdfCurrentKetWrap">
+                  <div class="p-1.5 rounded-2" style="background:#fff7ed; border:1px solid #fed7aa; font-size:0.72rem;" id="cekPdfInfoCatatanSaatIni">-</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 3. KEPUTUSAN VERIFIKASI CEPAT ISI PDF -->
+            <div class="p-2.5 rounded-3 border bg-white shadow-xs">
+              <div class="fw-bold text-dark mb-1.5" style="font-size:0.78rem;">
+                <i class="fa-solid fa-clipboard-check text-success me-1"></i>Keputusan Pengecekan Isi PDF
+              </div>
+
+              <div class="mb-2">
+                <label class="form-label fw-semibold text-muted mb-1" style="font-size:0.69rem;">Preset Cepat Ketidaksesuaian / Kekurangan Isi PDF (Klik untuk memilih):</label>
+                <div class="d-flex flex-wrap gap-1">
+                  <button type="button" class="btn btn-sm py-0.5 px-2 fw-semibold" style="font-size:0.67rem; background:#fef2f2; color:#b91c1c; border:1px solid #fecaca;" onclick="pilihPresetCatatanCekPdf('Isi PDF Salah Pasien / Berkas Tertukar')">Isi PDF Salah Pasien</button>
+                  <button type="button" class="btn btn-sm py-0.5 px-2 fw-semibold" style="font-size:0.67rem; background:#fef2f2; color:#b91c1c; border:1px solid #fecaca;" onclick="pilihPresetCatatanCekPdf('Resume Medis Belum Lengkap / Belum TTD DPJP')">Resume Belum TTD DPJP</button>
+                  <button type="button" class="btn btn-sm py-0.5 px-2 fw-semibold" style="font-size:0.67rem; background:#fef2f2; color:#b91c1c; border:1px solid #fecaca;" onclick="pilihPresetCatatanCekPdf('Lembar SEP Tidak Terlampir / No. SEP Tidak Sesuai')">SEP Tidak Sesuai</button>
+                  <button type="button" class="btn btn-sm py-0.5 px-2 fw-semibold" style="font-size:0.67rem; background:#fef2f2; color:#b91c1c; border:1px solid #fecaca;" onclick="pilihPresetCatatanCekPdf('Hasil Penunjang (Lab / Radiologi) Belum Terlampir di PDF')">Penunjang Belum Ada</button>
+                  <button type="button" class="btn btn-sm py-0.5 px-2 fw-semibold" style="font-size:0.67rem; background:#fef2f2; color:#b91c1c; border:1px solid #fecaca;" onclick="pilihPresetCatatanCekPdf('Laporan Operasi / Tindakan Belum Terlampir di PDF')">Laporan Operasi Kurang</button>
+                  <button type="button" class="btn btn-sm py-0.5 px-2 fw-semibold" style="font-size:0.67rem; background:#fef2f2; color:#b91c1c; border:1px solid #fecaca;" onclick="pilihPresetCatatanCekPdf('Billing / Rincian Biaya Belum Final')">Billing Belum Final</button>
+                  <button type="button" class="btn btn-sm py-0.5 px-2 fw-semibold" style="font-size:0.67rem; background:#fef2f2; color:#b91c1c; border:1px solid #fecaca;" onclick="pilihPresetCatatanCekPdf('Scan PDF Terpotong / Buram Tidak Terbaca')">Halaman Terpotong/Buram</button>
+                </div>
+              </div>
+
+              <div class="mb-2">
+                <label class="form-label fw-bold text-danger mb-1" style="font-size:0.71rem;">Catatan Kekurangan / Ketidaksesuaian PDF (Diisi bila PDF Tidak Sesuai)</label>
+                <div class="input-group input-group-sm">
+                  <input type="text" id="cekPdfCatatanInput" class="form-control form-control-sm" placeholder="Ketik atau klik preset alasan di atas jika isi PDF belum sesuai...">
+                  <button type="button" class="btn btn-outline-secondary" onclick="document.getElementById('cekPdfCatatanInput').value='';" title="Kosongkan catatan">
+                    <i class="fa-solid fa-eraser"></i>
+                  </button>
+                </div>
+              </div>
+
+              <div class="row g-2">
+                <div class="col-6">
+                  <button type="button" id="btnCekPdfSesuai" class="btn btn-sm btn-success w-100 fw-bold py-2" onclick="simpanHasilCekIsiPdf('SESUAI')">
+                    <i class="fa-solid fa-circle-check me-1"></i>PDF Sesuai (Lengkap)
+                  </button>
+                </div>
+                <div class="col-6">
+                  <button type="button" id="btnCekPdfTidakSesuai" class="btn btn-sm btn-danger w-100 fw-bold py-2" onclick="simpanHasilCekIsiPdf('TIDAK_SESUAI')">
+                    <i class="fa-solid fa-circle-xmark me-1"></i>Tidak Sesuai / Kurang
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- 4. GANTI / UPLOAD ULANG FILE PDF LANGSUNG -->
+            <div class="p-2.5 rounded-3 border bg-white shadow-xs">
+              <div class="d-flex align-items-center justify-content-between mb-1.5">
+                <div class="fw-bold text-dark" style="font-size:0.78rem;">
+                  <i class="fa-solid fa-cloud-arrow-up text-primary me-1"></i>Ganti / Upload Ulang File PDF
+                </div>
+                <span class="text-muted" style="font-size:0.67rem;">Sesuai Tanggal Acuan Klaim</span>
+              </div>
+              <div id="cekPdfRoutingPreviewBox" class="p-1.5 rounded-2 border bg-light mb-2 mono-num" style="font-size:0.69rem;">-</div>
+              <div class="d-flex gap-1.5 align-items-center">
+                <input type="file" id="cekPdfReplaceFileInput" class="form-control form-control-sm" accept=".pdf,application/pdf,image/*" onchange="updateCekPdfRoutingPreview()">
+                <button type="button" id="btnCekPdfUploadReplace" class="btn btn-sm btn-primary fw-bold text-nowrap px-2.5" onclick="uploadGantiPdfDariPanelCek()">
+                  <i class="fa-solid fa-upload me-1"></i>Upload &amp; Ganti
+                </button>
+              </div>
+              <div id="cekPdfActionStatusMsg" class="small mt-1.5 d-none"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- MODAL TAMBAH / EDIT KEGIATAN TIMELINE KERJA UNIT CASEMIX -->
 <div class="modal fade" id="modalTimelineKerja" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog modal-dialog-centered">
@@ -6827,6 +7096,7 @@
       if (!modalPanduanDatabase) modalPanduanDatabase = makeModal('modalPanduanDatabase');
       if (!modalImportGabungan) modalImportGabungan = makeModal('modalImportGabungan');
       if (!modalLaporanPdfJkn) modalLaporanPdfJkn = makeModal('modalLaporanPdfJkn');
+      if (!window.modalCekIsiPdf) window.modalCekIsiPdf = makeModal('modalCekIsiPdf');
     } catch (e) {}
   }
 
@@ -7014,11 +7284,22 @@
     return String(currentUser.role).trim().toLowerCase() === 'super admin';
   }
 
+  function canAccessPdfReview_() {
+    if (!currentUser || !currentUser.role) return false;
+    const r = String(currentUser.role).trim().toLowerCase();
+    return r === 'super admin' || r === 'admin berkas' || r.indexOf('berkas') !== -1;
+  }
+
   function applyGlobalRolePermissionsUI() {
     const isViewer = isViewerUser_();
+    const canPdfReview = canAccessPdfReview_();
     document.querySelectorAll('.mutasi-only-control').forEach(function(el) {
       if (isViewer) el.classList.add('d-none');
       else el.classList.remove('d-none');
+    });
+    document.querySelectorAll('.berkas-super-only-control').forEach(function(el) {
+      if (canPdfReview) el.classList.remove('d-none');
+      else el.classList.add('d-none');
     });
     const navRoleEl = document.getElementById('nav-role');
     if (navRoleEl && currentUser) {
@@ -11184,10 +11465,13 @@
         const hasTarifPendUI = Number(r.tarif || 0) > 0;
         const hasEklaimPendUI = (isKonsulPendUI || isBayiPendUI) ? hasCodingPendUI : (hasCodingPendUI && hasTarifPendUI);
         const hasBothPendReqsUI = (isKonsulPendUI || isBayiPendUI) ? hasEklaimPendUI : (hasPdfPendUI && hasEklaimPendUI);
-        const hadRevFlagUI = Boolean(r.is_revised_pending) ||
+        const isFlaggedPdfIssuePendUI = /^\[CEK\s+PDF\]/i.test(String(r.alasan_pending || ''));
+        const hadRevFlagUI = !isFlaggedPdfIssuePendUI && (
+          Boolean(r.is_revised_pending) ||
           String(r.status_pending || '').trim().toLowerCase() === 'tidak' ||
-          /\[(?:SELESAI\s+REVISI|TXT\s+E-?KLAIM\s+REVISI)/i.test(String(r.alasan_pending || ''));
-        if (!hasBothPendReqsUI) {
+          /\[(?:SELESAI\s+REVISI|TXT\s+E-?KLAIM\s+REVISI)/i.test(String(r.alasan_pending || ''))
+        );
+        if (!hasBothPendReqsUI || isFlaggedPdfIssuePendUI) {
           r.status_pending = 'Ya';
           r.is_revised_pending = false;
           r.status_akhir = 'PENDING';
@@ -11200,6 +11484,11 @@
             const cleanBaseUI = rawReasonUI.replace(/^\[(?:SELESAI\s+REVISI|TXT\s+E-?KLAIM\s+REVISI)[^\]]*\]\s*/i, '').trim() || 'Telah Dikoreksi';
             r.alasan_pending = '[SELESAI REVISI] ' + cleanBaseUI;
           }
+        }
+      } else if (r.status_pending !== 'Ya') {
+        const rawManualKetUI = String(r.ket_tidak_lengkap || '').trim();
+        if (rawManualKetUI && !isSystemPlaceholderDeficiencyUI(rawManualKetUI)) {
+          r.status_akhir = 'BELUM LENGKAP';
         }
       }
       r.ket_tidak_lengkap = buildDynamicVerificationNoteUI(r);
@@ -12409,6 +12698,564 @@
       loadData(true);
     }
   }
+
+  // =========================================================================
+  // PANEL CEK ULANG & VERIFIKASI ISI PDF (KHUSUS ADMIN BERKAS & SUPER ADMIN)
+  // =========================================================================
+  let _cekPdfQueue = [];
+  let _cekPdfIndex = 0;
+  let _cekPdfBusy = false;
+
+  function extractDriveFileIdUI_(urlVal) {
+    const s = String(urlVal || '').trim();
+    if (!s || s === '-') return '';
+    const m1 = s.match(/\/file\/d\/([a-zA-Z0-9_-]{15,})/);
+    if (m1 && m1[1]) return m1[1];
+    const m2 = s.match(/[?&]id=([a-zA-Z0-9_-]{15,})/);
+    if (m2 && m2[1]) return m2[1];
+    const m3 = s.match(/\/d\/([a-zA-Z0-9_-]{15,})/);
+    if (m3 && m3[1]) return m3[1];
+    return '';
+  }
+
+  function buildGoogleDrivePreviewUrlUI_(urlVal) {
+    const s = String(urlVal || '').trim();
+    if (!s || s === '-') return '';
+    const fid = extractDriveFileIdUI_(s);
+    if (fid) {
+      return 'https://drive.google.com/file/d/' + fid + '/preview';
+    }
+    return s;
+  }
+
+  function bukaModalCekIsiPdfByFilteredIndex(filteredIdx) {
+    if (!canAccessPdfReview_()) {
+      showInfoDialog('Fitur Cek Ulang Isi PDF khusus untuk akun dengan role Admin Berkas dan Super Admin.', 'Akses Dibatasi');
+      return;
+    }
+    const targetItem = (Array.isArray(currentTableFiltered) && currentTableFiltered[filteredIdx])
+      ? currentTableFiltered[filteredIdx]
+      : null;
+    bukaModalCekIsiPdf(targetItem);
+  }
+
+  function bukaModalCekIsiPdf(initialClaimObj) {
+    if (!canAccessPdfReview_()) {
+      showInfoDialog('Fitur Cek Ulang Isi PDF khusus untuk akun dengan role Admin Berkas dan Super Admin.', 'Akses Dibatasi');
+      return;
+    }
+    initAllModalsSafely();
+    const filterEl = document.getElementById('cekPdfFilterMode');
+    if (initialClaimObj && filterEl) {
+      const hasLink = Boolean(initialClaimObj.link && String(initialClaimObj.link).trim() !== '' && String(initialClaimObj.link).trim() !== '-');
+      if (!hasLink) {
+        filterEl.value = 'FILTER_AKTIF_SEMUA';
+      } else if (filterEl.value === 'KHUSUS_PENDING' && !(initialClaimObj.is_pending_sheet || initialClaimObj.sheetTarget === 'Klaim_Pending' || initialClaimObj.status_pending === 'Ya')) {
+        filterEl.value = 'FILTER_AKTIF_ADA_PDF';
+      }
+    }
+    const searchEl = document.getElementById('cekPdfSearchInput');
+    if (searchEl && initialClaimObj) searchEl.value = '';
+    bangunAntreanCekPdf_(initialClaimObj, false);
+    if (window.modalCekIsiPdf) {
+      window.modalCekIsiPdf.show();
+    }
+  }
+
+  function bangunAntreanCekPdf_(targetClaimToSelect, preserveCurrentSelection) {
+    const modeEl = document.getElementById('cekPdfFilterMode');
+    const mode = modeEl ? modeEl.value : 'FILTER_AKTIF_ADA_PDF';
+    const qRaw = String((document.getElementById('cekPdfSearchInput') || {}).value || '').trim().toLowerCase();
+
+    const prevSelected = (!targetClaimToSelect && preserveCurrentSelection && _cekPdfQueue[_cekPdfIndex])
+      ? _cekPdfQueue[_cekPdfIndex]
+      : targetClaimToSelect;
+
+    const basePool = (Array.isArray(currentTableFiltered) && currentTableFiltered.length > 0)
+      ? currentTableFiltered
+      : (Array.isArray(allData) ? allData : []);
+
+    _cekPdfQueue = basePool.filter(function(d) {
+      if (!d) return false;
+      const isBayi = Boolean(d.is_bayi_sehat) || isBayiSehatBySepAndNameUI(d.no_sep, d.nama_pasien, d.tindak_lanjut);
+      if (isBayi) return false;
+      const hasPdf = Boolean(d.link && String(d.link).trim() !== '' && String(d.link).trim() !== '-');
+      const isPend = Boolean(d.is_pending_sheet || d.sheetTarget === 'Klaim_Pending' || d.status_pending === 'Ya');
+
+      if (mode === 'FILTER_AKTIF_ADA_PDF' && !hasPdf) return false;
+      if (mode === 'LENGKAP_CEK_ULANG' && (!hasPdf || d.status_akhir !== 'LENGKAP')) return false;
+      if (mode === 'BELUM_LENGKAP_ADA_PDF') {
+        const rawKet = String(d.ket_tidak_lengkap || '').trim();
+        const hasManualKet = Boolean(rawKet && !isSystemPlaceholderDeficiencyUI(rawKet));
+        if (!hasPdf || (d.status_akhir === 'LENGKAP' && !hasManualKet)) return false;
+      }
+      if (mode === 'KHUSUS_PENDING' && !isPend) return false;
+
+      if (qRaw) {
+        const hay = (
+          String(d.no_sep || '') + ' ' +
+          String(d.nama_pasien || '') + ' ' +
+          String(d.no_rm || '') + ' ' +
+          String(d.dpjp || '') + ' ' +
+          String(d.nama_ruangan || '') + ' ' +
+          String(d.ket_tidak_lengkap || '')
+        ).toLowerCase();
+        if (hay.indexOf(qRaw) === -1) return false;
+      }
+      return true;
+    });
+
+    if (prevSelected && _cekPdfQueue.indexOf(prevSelected) === -1) {
+      const matchIdx = _cekPdfQueue.findIndex(function(it) {
+        return it && String(it.no_sep || '') === String(prevSelected.no_sep || '') &&
+          String(it.no_rm || '') === String(prevSelected.no_rm || '') &&
+          String(it.sheetTarget || '') === String(prevSelected.sheetTarget || '');
+      });
+      if (matchIdx !== -1) {
+        _cekPdfIndex = matchIdx;
+      } else if (targetClaimToSelect) {
+        _cekPdfQueue.unshift(targetClaimToSelect);
+        _cekPdfIndex = 0;
+      } else {
+        _cekPdfIndex = 0;
+      }
+    } else if (prevSelected) {
+      _cekPdfIndex = Math.max(0, _cekPdfQueue.indexOf(prevSelected));
+    } else {
+      _cekPdfIndex = 0;
+    }
+
+    renderQueueDropdownCekPdf_();
+    pilihBerkasCekPdf(_cekPdfIndex);
+  }
+
+  function renderQueueDropdownCekPdf_() {
+    const sel = document.getElementById('cekPdfQueueSelect');
+    const badge = document.getElementById('cekPdfCounterBadge');
+    if (!sel) return;
+    if (_cekPdfQueue.length === 0) {
+      sel.innerHTML = '<option value="0">-- Tidak ada berkas pada filter antrean ini --</option>';
+      if (badge) badge.innerText = '0 / 0 Berkas';
+      return;
+    }
+    const opts = _cekPdfQueue.map(function(d, idx) {
+      const stIcon = d.status_akhir === 'LENGKAP' ? '[LENGKAP]' : (d.status_akhir === 'PENDING' ? '[PENDING]' : '[BELUM LENGKAP]');
+      const sepTxt = (d.no_sep && d.no_sep !== '-') ? d.no_sep : ('RM:' + (d.no_rm || '-'));
+      const namaShort = String(d.nama_pasien || '-').slice(0, 24);
+      return '<option value="' + idx + '"' + (idx === _cekPdfIndex ? ' selected' : '') + '>' +
+        (idx + 1) + '. ' + escapeHtmlUI(sepTxt) + ' — ' + escapeHtmlUI(namaShort) + ' ' + stIcon +
+      '</option>';
+    });
+    sel.innerHTML = opts.join('');
+    if (badge) {
+      badge.innerText = (_cekPdfIndex + 1) + ' / ' + _cekPdfQueue.length + ' Berkas';
+    }
+  }
+
+  function pilihBerkasCekPdf(idx) {
+    const total = _cekPdfQueue.length;
+    const btnPrev = document.getElementById('btnCekPdfPrev');
+    const btnNext = document.getElementById('btnCekPdfNext');
+    const btnSesuai = document.getElementById('btnCekPdfSesuai');
+    const btnTidakSesuai = document.getElementById('btnCekPdfTidakSesuai');
+    const btnUpload = document.getElementById('btnCekPdfUploadReplace');
+    const fileInput = document.getElementById('cekPdfReplaceFileInput');
+    const msgBox = document.getElementById('cekPdfActionStatusMsg');
+
+    if (fileInput) fileInput.value = '';
+    if (msgBox) { msgBox.className = 'small mt-1.5 d-none'; msgBox.innerText = ''; }
+
+    if (total === 0) {
+      _cekPdfIndex = 0;
+      if (btnPrev) btnPrev.disabled = true;
+      if (btnNext) btnNext.disabled = true;
+      if (btnSesuai) btnSesuai.disabled = true;
+      if (btnTidakSesuai) btnTidakSesuai.disabled = true;
+      if (btnUpload) btnUpload.disabled = true;
+      document.getElementById('cekPdfHeaderTitle').innerText = 'Tidak ada berkas PDF pada filter ini';
+      document.getElementById('cekPdfHeaderSubtitle').innerText = 'Ubah filter antrean di panel kanan untuk menampilkan berkas';
+      document.getElementById('cekPdfIframe').src = 'about:blank';
+      document.getElementById('cekPdfEmptyOverlay').classList.remove('d-none');
+      return;
+    }
+
+    _cekPdfIndex = Math.max(0, Math.min(total - 1, Number(idx) || 0));
+    const d = _cekPdfQueue[_cekPdfIndex];
+    const sel = document.getElementById('cekPdfQueueSelect');
+    if (sel) sel.value = String(_cekPdfIndex);
+    const badge = document.getElementById('cekPdfCounterBadge');
+    if (badge) badge.innerText = (_cekPdfIndex + 1) + ' / ' + total + ' Berkas';
+
+    if (btnPrev) btnPrev.disabled = (_cekPdfIndex <= 0);
+    if (btnNext) btnNext.disabled = (_cekPdfIndex >= total - 1);
+    if (btnSesuai) btnSesuai.disabled = false;
+    if (btnTidakSesuai) btnTidakSesuai.disabled = false;
+    if (btnUpload) btnUpload.disabled = false;
+
+    const isPend = Boolean(d.is_pending_sheet || d.sheetTarget === 'Klaim_Pending' || d.status_pending === 'Ya');
+    const sheetLabel = isPend ? 'Sheet Klaim_Pending' : ('Sheet ' + (d.sheetTarget || (d.jenis_rawat === 'Rawat Inap' ? 'Rawat_Inap' : 'Rawat_Jalan')));
+    document.getElementById('cekPdfHeaderTitle').innerText = (d.nama_pasien || '-') + ' · SEP: ' + (d.no_sep || '-');
+    document.getElementById('cekPdfHeaderSubtitle').innerText = sheetLabel + ' · Tgl Acuan: ' + (d.tgl_acuan || '-') + ' · RM: ' + (d.no_rm || '-');
+
+    const rawLink = String(d.link || '').trim();
+    const hasLink = Boolean(rawLink && rawLink !== '-');
+    const openTabBtn = document.getElementById('cekPdfBtnOpenTab');
+    const iframeEl = document.getElementById('cekPdfIframe');
+    const overlayEl = document.getElementById('cekPdfEmptyOverlay');
+
+    if (hasLink) {
+      if (openTabBtn) {
+        openTabBtn.href = rawLink;
+        openTabBtn.classList.remove('disabled');
+      }
+      if (overlayEl) overlayEl.classList.add('d-none');
+      const previewUrl = buildGoogleDrivePreviewUrlUI_(rawLink);
+      if (iframeEl && iframeEl.dataset.currentSrc !== previewUrl) {
+        iframeEl.dataset.currentSrc = previewUrl;
+        iframeEl.src = previewUrl;
+      }
+    } else {
+      if (openTabBtn) {
+        openTabBtn.href = '#';
+        openTabBtn.classList.add('disabled');
+      }
+      if (iframeEl) {
+        iframeEl.dataset.currentSrc = '';
+        iframeEl.src = 'about:blank';
+      }
+      if (overlayEl) overlayEl.classList.remove('d-none');
+    }
+
+    // Isi Ringkasan Identitas & Koding
+    document.getElementById('cekPdfInfoSep').innerText = d.no_sep || '-';
+    document.getElementById('cekPdfInfoPasien').innerText = (d.nama_pasien || '-') + ' (RM: ' + (d.no_rm || '-') + ')';
+    const poliRuang = resolveRuanganOrPoliUI(d) || d.nama_ruangan || '-';
+    document.getElementById('cekPdfInfoLayanan').innerText = (d.jenis_rawat || '-') + ' · ' + poliRuang;
+    document.getElementById('cekPdfInfoTanggal').innerText = (d.tgl_acuan || '-') + ' (Reg: ' + (d.tgl_registrasi || '-') + (d.tgl_pulang ? ' / Plg: ' + d.tgl_pulang : '') + ')';
+    document.getElementById('cekPdfInfoDpjp').innerText = d.dpjp || '-';
+    document.getElementById('cekPdfInfoTarif').innerText = formatRupiah(d.tarif || 0);
+    document.getElementById('cekPdfInfoIcd10').innerText = (d.icd_10 && d.icd_10 !== '-') ? d.icd_10 : 'Belum Koding';
+    document.getElementById('cekPdfInfoIcd9').innerText = (d.icd_9 && d.icd_9 !== '-') ? d.icd_9 : '-';
+
+    const statusBadgeEl = document.getElementById('cekPdfCurrentStatusBadge');
+    if (statusBadgeEl) {
+      if (d.status_akhir === 'LENGKAP') {
+        statusBadgeEl.innerHTML = '<span class="badge bg-success"><i class="fa-solid fa-check-circle me-1"></i>LENGKAP (Siap Klaim)</span>';
+      } else if (d.status_akhir === 'PENDING') {
+        statusBadgeEl.innerHTML = '<span class="badge bg-warning text-dark"><i class="fa-solid fa-clock me-1"></i>KASUS PENDING</span>';
+      } else {
+        statusBadgeEl.innerHTML = '<span class="badge bg-danger"><i class="fa-solid fa-triangle-exclamation me-1"></i>BELUM LENGKAP</span>';
+      }
+    }
+
+    const rawKet = String(d.ket_tidak_lengkap || '').trim();
+    const cleanManualKet = isSystemPlaceholderDeficiencyUI(rawKet) ? '' : stripSystemDeficiencySuffixUI(rawKet);
+    const pendingReasonClean = isPend ? String(d.alasan_pending || '').replace(/^\[(?:CEK\s+PDF|SELESAI\s+REVISI|TXT\s+E-?KLAIM\s+REVISI)[^\]]*\]\s*/i, '').trim() : '';
+    const catatanInputEl = document.getElementById('cekPdfCatatanInput');
+    if (catatanInputEl) {
+      catatanInputEl.value = cleanManualKet || '';
+    }
+
+    const infoCatatanEl = document.getElementById('cekPdfInfoCatatanSaatIni');
+    if (infoCatatanEl) {
+      const noteText = isPend
+        ? (d.alasan_pending || d.ket_tidak_lengkap || 'Kasus Pending BPJS')
+        : (buildDynamicVerificationNoteUI(d) || 'Seluruh syarat koding, tarif, dan berkas PDF sudah terpenuhi.');
+      infoCatatanEl.innerHTML = '<b>Keterangan Saat Ini:</b> ' + escapeHtmlUI(noteText);
+    }
+
+    updateCekPdfRoutingPreview();
+  }
+
+  function reloadIframeCekPdf() {
+    const iframeEl = document.getElementById('cekPdfIframe');
+    if (!iframeEl) return;
+    const cur = iframeEl.dataset.currentSrc || iframeEl.src;
+    if (cur && cur !== 'about:blank') {
+      iframeEl.src = cur;
+    }
+  }
+
+  function navigasiCekPdf(delta) {
+    if (_cekPdfQueue.length === 0) return;
+    const nextIdx = _cekPdfIndex + delta;
+    if (nextIdx >= 0 && nextIdx < _cekPdfQueue.length) {
+      pilihBerkasCekPdf(nextIdx);
+    }
+  }
+
+  function pilihPresetCatatanCekPdf(presetText) {
+    const el = document.getElementById('cekPdfCatatanInput');
+    if (!el) return;
+    const cur = String(el.value || '').trim();
+    if (!cur) {
+      el.value = presetText;
+    } else if (cur.toLowerCase().indexOf(presetText.toLowerCase()) === -1) {
+      el.value = cur + '; ' + presetText;
+    }
+    el.focus();
+  }
+
+  function updateCekPdfRoutingPreview() {
+    const box = document.getElementById('cekPdfRoutingPreviewBox');
+    if (!box) return;
+    const d = _cekPdfQueue[_cekPdfIndex];
+    if (!d) {
+      box.innerText = '-';
+      return;
+    }
+    const isPend = Boolean(d.is_pending_sheet || d.sheetTarget === 'Klaim_Pending' || d.status_pending === 'Ya');
+    const tglAcuan = String(d.tgl_acuan || d.tgl_pulang || d.tgl_registrasi || '').trim() || 'YYYY-MM-DD';
+    const yearStr = /^\d{4}/.test(tglAcuan) ? tglAcuan.slice(0, 4) : 'Tahun';
+    const monthNum = /^\d{4}-\d{2}/.test(tglAcuan) ? parseInt(tglAcuan.slice(5, 7), 10) : 0;
+    const monthFolder = (monthNum >= 1 && monthNum <= 12)
+      ? (yearStr + '-' + String(monthNum).padStart(2, '0') + ' (' + NAMA_BULAN_INDO_UI[monthNum - 1] + ')')
+      : 'YYYY-MM';
+    const layananFolder = d.jenis_rawat === 'Rawat Inap' ? 'Rawat_Inap' : 'Rawat_Jalan';
+    const sepName = (d.no_sep && d.no_sep !== '-') ? (d.no_sep + '.pdf') : ('RM_' + (d.no_rm || 'Pasien') + '.pdf');
+
+    if (isPend) {
+      box.innerHTML = '<i class="fa-solid fa-folder-tree text-warning me-1"></i><b>Folder Pending (6-Tier):</b> Pending / ' +
+        escapeHtmlUI(yearStr + ' / ' + monthFolder + ' / Tahap_1|2 / ' + layananFolder + ' / ' + tglAcuan + ' / ' + sepName);
+    } else {
+      box.innerHTML = '<i class="fa-solid fa-folder-tree text-success me-1"></i><b>Folder Reguler (5-Tier):</b> Reguler / ' +
+        escapeHtmlUI(yearStr + ' / ' + monthFolder + ' / ' + layananFolder + ' / ' + tglAcuan + ' / ' + sepName);
+    }
+  }
+
+  function showCekPdfStatusMsg_(msg, isError) {
+    const el = document.getElementById('cekPdfActionStatusMsg');
+    if (!el) return;
+    el.className = 'small mt-1.5 p-1.5 rounded-2 fw-semibold ' + (isError ? 'bg-danger-subtle text-danger border border-danger-subtle' : 'bg-success-subtle text-success border border-success-subtle');
+    el.innerHTML = (isError ? '<i class="fa-solid fa-circle-exclamation me-1"></i>' : '<i class="fa-solid fa-circle-check me-1"></i>') + escapeHtmlUI(msg);
+  }
+
+  function simpanHasilCekIsiPdf(modeVerifikasi) {
+    if (_cekPdfBusy) return;
+    if (!canAccessPdfReview_()) {
+      showInfoDialog('Fitur Cek Ulang Isi PDF khusus untuk akun Admin Berkas dan Super Admin.', 'Akses Dibatasi');
+      return;
+    }
+    const d = _cekPdfQueue[_cekPdfIndex];
+    if (!d) return;
+
+    const catatanEl = document.getElementById('cekPdfCatatanInput');
+    const catatanVal = String((catatanEl || {}).value || '').trim();
+    if (modeVerifikasi === 'TIDAK_SESUAI' && !catatanVal) {
+      showCekPdfStatusMsg_('Pilih salah satu preset atau ketik catatan alasan PDF Tidak Sesuai terlebih dahulu.', true);
+      if (catatanEl) catatanEl.focus();
+      return;
+    }
+
+    const isPend = Boolean(d.is_pending_sheet || d.sheetTarget === 'Klaim_Pending' || d.status_pending === 'Ya');
+    const resolvedSheet = isPend ? 'Klaim_Pending' : (d.sheetTarget || (d.jenis_rawat === 'Rawat Inap' ? 'Rawat_Inap' : 'Rawat_Jalan'));
+    const hasLink = Boolean(d.link && String(d.link).trim() !== '' && String(d.link).trim() !== '-');
+    const hasKoding = d.koding === 'Sudah' || (d.icd_10 && d.icd_10 !== '-');
+    const hasTarif = Number(d.tarif || 0) > 0;
+    const hasTgl = Boolean(d.tgl_acuan && String(d.tgl_acuan).trim() !== '');
+    const hasSep = Boolean(d.no_sep && String(d.no_sep).trim() !== '' && String(d.no_sep).trim() !== '-');
+
+    // Optimistic UI update
+    if (isPend) {
+      const cleanBaseReason = String(d.alasan_pending || '').replace(/^\[(?:CEK\s+PDF|SELESAI\s+REVISI|TXT\s+E-?KLAIM\s+REVISI)[^\]]*\]\s*/i, '').trim() || 'Pending Verifikasi BPJS';
+      if (modeVerifikasi === 'TIDAK_SESUAI') {
+        d.status_pending = 'Ya';
+        d.is_revised_pending = false;
+        d.alasan_pending = '[CEK PDF] ' + catatanVal + (cleanBaseReason && cleanBaseReason !== catatanVal ? (' · ' + cleanBaseReason) : '');
+        d.ket_tidak_lengkap = d.alasan_pending;
+        d.status_akhir = 'PENDING';
+      } else {
+        if (hasLink && hasKoding && hasTarif) {
+          d.status_pending = 'Tidak';
+          d.is_revised_pending = true;
+          d.alasan_pending = '[SELESAI REVISI] ' + cleanBaseReason;
+          d.ket_tidak_lengkap = '';
+          d.status_akhir = 'LENGKAP';
+        } else {
+          d.status_pending = 'Ya';
+          d.alasan_pending = cleanBaseReason;
+          d.ket_tidak_lengkap = cleanBaseReason;
+          d.status_akhir = 'PENDING';
+        }
+      }
+    } else {
+      if (modeVerifikasi === 'TIDAK_SESUAI') {
+        d.ket_tidak_lengkap = catatanVal;
+        d.status_akhir = 'BELUM LENGKAP';
+      } else {
+        d.ket_tidak_lengkap = '';
+        d.status_akhir = (hasSep && hasTgl && hasKoding && hasTarif && hasLink) ? 'LENGKAP' : 'BELUM LENGKAP';
+        d.ket_tidak_lengkap = buildDynamicVerificationNoteUI(d);
+      }
+    }
+
+    // Sinkronkan ke Supabase langsung dari browser + simpan cache lokal
+    if (typeof window.sbSyncClaimPdfVerification === 'function') {
+      window.sbSyncClaimPdfVerification({
+        sheetTarget: resolvedSheet,
+        rowNumber: d.rowNumber,
+        noSep: d.no_sep,
+        noRm: d.no_rm,
+        link: d.link,
+        statusPending: d.status_pending,
+        alasanPending: d.alasan_pending,
+        ketTidakLengkap: modeVerifikasi === 'TIDAK_SESUAI' ? catatanVal : '',
+        statusAkhir: d.status_akhir
+      });
+    }
+    idbSetClaimsSnapshot_(allData, _lastSyncedAt || new Date().toISOString());
+    updateDashboard();
+    renderQueueDropdownCekPdf_();
+
+    const payload = {
+      actorRole: currentUser ? currentUser.role : 'Super Admin',
+      modeVerifikasi: modeVerifikasi,
+      catatanKekurangan: modeVerifikasi === 'TIDAK_SESUAI' ? catatanVal : '',
+      sheetTarget: resolvedSheet,
+      isPendingSheet: isPend,
+      jenisRawat: d.jenis_rawat,
+      rowNumber: d.rowNumber,
+      noSep: d.no_sep,
+      noRm: d.no_rm
+    };
+
+    showCekPdfStatusMsg_(
+      modeVerifikasi === 'TIDAK_SESUAI'
+        ? ('Dituliskan Tidak Sesuai (' + d.no_sep + '): ' + catatanVal)
+        : ('Diverifikasi PDF Sesuai (' + d.no_sep + ') → Status: ' + d.status_akhir),
+      modeVerifikasi === 'TIDAK_SESUAI'
+    );
+
+    google.script.run
+      .withSuccessHandler(function(res) {
+        if (res && res.success) {
+          d.status_akhir = res.statusAkhir || d.status_akhir;
+          if (res.driveUrl) d.link = res.driveUrl;
+          idbSetClaimsSnapshot_(allData, _lastSyncedAt || new Date().toISOString());
+          updateDashboard();
+        }
+      })
+      .withFailureHandler(function(err) {
+        console.warn('Sinkronisasi Spreadsheet verifikasi PDF:', err);
+      })
+      .verifikasiUlangIsiPdfKlaim(payload);
+
+    const autoNextEl = document.getElementById('cekPdfAutoNext');
+    if (autoNextEl && autoNextEl.checked && _cekPdfIndex < _cekPdfQueue.length - 1) {
+      setTimeout(function() {
+        pilihBerkasCekPdf(_cekPdfIndex + 1);
+      }, 220);
+    } else {
+      pilihBerkasCekPdf(_cekPdfIndex);
+    }
+  }
+
+  function uploadGantiPdfDariPanelCek() {
+    if (_cekPdfBusy) return;
+    if (!canAccessPdfReview_()) {
+      showInfoDialog('Fitur Cek Ulang Isi PDF khusus untuk akun Admin Berkas dan Super Admin.', 'Akses Dibatasi');
+      return;
+    }
+    const d = _cekPdfQueue[_cekPdfIndex];
+    if (!d) return;
+    const fileInput = document.getElementById('cekPdfReplaceFileInput');
+    const file = fileInput && fileInput.files ? fileInput.files[0] : null;
+    if (!file) {
+      showCekPdfStatusMsg_('Pilih file PDF pengganti terlebih dahulu sebelum klik Upload & Ganti.', true);
+      return;
+    }
+
+    const btnUpload = document.getElementById('btnCekPdfUploadReplace');
+    _cekPdfBusy = true;
+    if (btnUpload) {
+      btnUpload.disabled = true;
+      btnUpload.innerHTML = '<i class="fa-solid fa-spinner fa-spin me-1"></i>Mengupload...';
+    }
+    showCekPdfStatusMsg_('Mengunggah & mengganti berkas PDF ke folder Google Drive sesuai Tanggal Acuan Klaim...', false);
+
+    const isPend = Boolean(d.is_pending_sheet || d.sheetTarget === 'Klaim_Pending' || d.status_pending === 'Ya');
+    const resolvedSheet = isPend ? 'Klaim_Pending' : (d.sheetTarget || (d.jenis_rawat === 'Rawat Inap' ? 'Rawat_Inap' : 'Rawat_Jalan'));
+
+    const reader = new FileReader();
+    reader.onload = function(evt) {
+      const base64Data = String(evt.target.result || '').split(',')[1] || '';
+      const payload = {
+        actorRole: currentUser ? currentUser.role : 'Super Admin',
+        modeVerifikasi: 'SESUAI',
+        catatanKekurangan: '',
+        sheetTarget: resolvedSheet,
+        isPendingSheet: isPend,
+        jenisRawat: d.jenis_rawat,
+        rowNumber: d.rowNumber,
+        noSep: d.no_sep,
+        noRm: d.no_rm,
+        fileName: file.name,
+        fileData: base64Data,
+        mimeType: file.type || 'application/pdf'
+      };
+
+      google.script.run
+        .withSuccessHandler(function(res) {
+          _cekPdfBusy = false;
+          if (btnUpload) {
+            btnUpload.disabled = false;
+            btnUpload.innerHTML = '<i class="fa-solid fa-upload me-1"></i>Upload &amp; Ganti';
+          }
+          if (!res || !res.success) {
+            showCekPdfStatusMsg_((res && res.message) ? res.message : 'Gagal mengunggah PDF baru.', true);
+            return;
+          }
+          if (fileInput) fileInput.value = '';
+          if (res.driveUrl) d.link = res.driveUrl;
+          if (res.statusAkhir) d.status_akhir = res.statusAkhir;
+          if (res.statusPending) d.status_pending = res.statusPending;
+          if (res.alasanPending !== undefined && isPend) d.alasan_pending = res.alasanPending;
+          d.ket_tidak_lengkap = isPend ? (d.alasan_pending || '') : buildDynamicVerificationNoteUI(d);
+
+          if (typeof window.sbSyncClaimPdfVerification === 'function') {
+            window.sbSyncClaimPdfVerification({
+              sheetTarget: resolvedSheet,
+              rowNumber: d.rowNumber,
+              noSep: d.no_sep,
+              noRm: d.no_rm,
+              link: d.link,
+              statusPending: d.status_pending,
+              alasanPending: d.alasan_pending,
+              ketTidakLengkap: '',
+              statusAkhir: d.status_akhir
+            });
+          }
+
+          idbSetClaimsSnapshot_(allData, _lastSyncedAt || new Date().toISOString());
+          updateDashboard();
+          renderQueueDropdownCekPdf_();
+          pilihBerkasCekPdf(_cekPdfIndex);
+          showCekPdfStatusMsg_(res.message || 'Berkas PDF berhasil diganti & diperbarui.', false);
+        })
+        .withFailureHandler(function(err) {
+          _cekPdfBusy = false;
+          if (btnUpload) {
+            btnUpload.disabled = false;
+            btnUpload.innerHTML = '<i class="fa-solid fa-upload me-1"></i>Upload &amp; Ganti';
+          }
+          showCekPdfStatusMsg_('Gagal mengupload file PDF: ' + ((err && err.message) ? err.message : String(err)), true);
+        })
+        .verifikasiUlangIsiPdfKlaim(payload);
+    };
+    reader.readAsDataURL(file);
+  }
+
+  document.addEventListener('keydown', function(evt) {
+    const modalEl = document.getElementById('modalCekIsiPdf');
+    if (!modalEl || !modalEl.classList.contains('show')) return;
+    if (evt.altKey && evt.key === 'ArrowRight') {
+      evt.preventDefault();
+      navigasiCekPdf(1);
+    } else if (evt.altKey && evt.key === 'ArrowLeft') {
+      evt.preventDefault();
+      navigasiCekPdf(-1);
+    }
+  });
 
   const CLAIMS_CACHE_KEY = 'casemix_claims_cache_v6';
   let searchDebounceTimer = null;
@@ -14879,8 +15726,12 @@
                 : '<span class="mono-num fw-bold text-dark">' + formatRupiah(d.tarif) + '</span>'));
 
       const isPendingPdfRow = isPendingSheetRow || d.status_pending === 'Ya';
+      const canReviewPdfRow = typeof canAccessPdfReview_ === 'function' && canAccessPdfReview_();
+      const btnQuickReviewPdf = (canReviewPdfRow && !isBayiSehat && d.link)
+        ? '<button type="button" class="btn btn-sm py-0 px-1.5 fw-bold" style="background:#ecfdf5; color:#047857; border:1px solid #6ee7b7; font-size:0.68rem;" onclick="bukaModalCekIsiPdfByFilteredIndex(' + filteredIdx + ')" title="Cek Ulang Isi PDF, Tandai Sesuai / Tidak Sesuai, atau Ganti File PDF"><i class="fa-solid fa-file-circle-check"></i> Cek Isi</button>'
+        : '';
       const btnFile = d.link
-        ? '<a href="' + d.link + '" target="_blank" class="btn btn-sm btn-outline-success py-0 px-2 fw-semibold"><i class="fa-solid fa-file-pdf me-1"></i>' + (isKonsul ? "PDF Induk" : "Lihat PDF") + '</a>'
+        ? '<div class="d-inline-flex align-items-center gap-1 flex-wrap justify-content-center"><a href="' + d.link + '" target="_blank" class="btn btn-sm btn-outline-success py-0 px-2 fw-semibold"><i class="fa-solid fa-file-pdf me-1"></i>' + (isKonsul ? "PDF Induk" : "Lihat PDF") + '</a>' + btnQuickReviewPdf + '</div>'
         : (isBayiSehat
             ? '<span class="badge" style="background:#e0f2fe; color:#0369a1; border:1px solid #7dd3fc; font-size:0.65rem;" title="Pasien Bayi Sehat cukup dikoding saja, tidak perlu lampiran berkas PDF"><i class="fa-solid fa-baby me-1"></i>Cukup Koding (Tanpa PDF)</span>'
             : (isPendingPdfRow
